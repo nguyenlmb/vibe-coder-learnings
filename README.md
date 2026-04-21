@@ -19,7 +19,7 @@ Both files are written to be practical and copy-paste friendly. The guide refere
 
 ## Context
 
-These learnings come from building [Overmind](https://github.com/linhnguyen/Overmind) — a production Electron + Supabase + LLM app — and a Slack AI agent built on top of it. The security points were validated through a formal security audit; the reliability points were each discovered by breaking something in production.
+These learnings come from building a production Electron + Supabase + LLM app and a Slack AI agent built on top of it. The security points were validated through a formal security audit; the reliability points were each discovered by breaking something in production.
 
 ## Contributing
 
