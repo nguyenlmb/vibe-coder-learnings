@@ -19,6 +19,7 @@ Claude.ai  ──────────────────►  Your MCP W
 
 - **Cloudflare Workers** — serverless runtime, deploys globally in seconds
 - **Cloudflare KV** — key-value store for sessions
+- **Cloudflare D1** — SQLite database for usage logging (optional but recommended)
 - **Google OAuth** — identify users by email
 - **Your data source** — Supabase, REST API, anything
 
@@ -46,6 +47,31 @@ DEBUG_SECRET              (secret)  ← for /debug endpoint
 **KV namespace to create and bind:**
 ```
 KV binding name: SESSIONS
+```
+
+**D1 database to create and bind (optional — for usage logging):**
+```
+D1 database name: my-mcp-usage
+D1 binding name:  USAGE_DB
+```
+
+Run this SQL in the D1 Console after creating the database:
+```sql
+CREATE TABLE tool_calls (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts     TEXT NOT NULL,
+  user   TEXT NOT NULL,
+  tool   TEXT NOT NULL,
+  client TEXT
+);
+
+CREATE TABLE weekly_summary (
+  week  TEXT NOT NULL,
+  user  TEXT NOT NULL,
+  tool  TEXT NOT NULL,
+  calls INTEGER NOT NULL,
+  PRIMARY KEY (week, user, tool)
+);
 ```
 
 ---
@@ -305,6 +331,22 @@ if (url.pathname === "/mcp" || url.pathname === "/") {
   if (method === "tools/call") {
     const { name, arguments: args } = params;
     console.log(JSON.stringify({ event: "tool_call", user: session.email, tool: name, ts: new Date().toISOString() }));
+
+    // Log to D1 — non-blocking, tool call proceeds even if insert fails.
+    // Captures who called what, when, and from which client (Claude Code / Claude.ai / Cowork).
+    try {
+      await env.USAGE_DB.prepare(
+        `INSERT INTO tool_calls (ts, user, tool, client) VALUES (?, ?, ?, ?)`
+      ).bind(
+        new Date().toISOString(),
+        session.email,
+        name,
+        request.headers.get("x-anthropic-client") || null
+      ).run();
+    } catch (_) {
+      // D1 insert failed — don't block the user
+    }
+
     try {
       const result = await handleToolCall(name, args ?? {}, session, env);
       return Response.json({
@@ -453,6 +495,44 @@ if (method === "prompts/get") {
 
 ---
 
+## Step 10 — D1 Usage Logging (Optional but Recommended)
+
+Knowing who calls what tools and how often is invaluable once you have real users. Cloudflare D1 (SQLite at the edge) makes this cheap and easy.
+
+### Why D1 over just `console.log`?
+
+Cloudflare log exports require manual CSV downloads or a paid Logpush subscription. D1 lets you query usage anytime with plain SQL — no extra tooling.
+
+### Setup
+
+1. **Cloudflare dashboard → Storage & Databases → D1 → Create database** → name it `my-mcp-usage`
+2. In the **Console** tab, run the schema (see Step 1)
+3. **Worker Settings → Bindings → Add → D1 Database** → bind as `USAGE_DB`
+
+### Querying your logs
+
+```sql
+-- Who are my most active users?
+SELECT user, COUNT(*) as calls FROM tool_calls GROUP BY user ORDER BY calls DESC;
+
+-- What tools are used most?
+SELECT tool, COUNT(*) as calls FROM tool_calls GROUP BY tool ORDER BY calls DESC;
+
+-- Activity in the last 7 days
+SELECT * FROM tool_calls WHERE ts > datetime('now', '-7 days') ORDER BY ts DESC;
+
+-- Weekly rollup (populate weekly_summary with a scheduled job)
+SELECT strftime('%Y-W%W', ts) as week, user, tool, COUNT(*) as calls
+FROM tool_calls
+GROUP BY week, user, tool;
+```
+
+### The insert is always non-blocking
+
+Wrap the D1 insert in a `try/catch` and never `await` its failure — a D1 hiccup should never break a user's tool call.
+
+---
+
 ## Common Pitfalls
 
 | Problem | Symptom | Fix |
@@ -483,4 +563,4 @@ if (method === "prompts/get") {
 
 ---
 
-*Built April 2026 — MCP protocol version 2025-11-25, Cloudflare Workers.*
+*Built April–May 2026 — MCP protocol version 2025-11-25, Cloudflare Workers + D1.*
